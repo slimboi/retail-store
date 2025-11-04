@@ -1,0 +1,297 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>CloudPros Web Store</title>
+    <link rel="stylesheet" href="/styles.css"/>
+    <style>
+      /* minimal drawer/modal styling in case styles.css is absent */
+      :root{--bg:#0b0d0f;--card:#13161a;--text:#e6e6e6;--muted:#9aa3ab;--brand:#23d160;}
+      *{box-sizing:border-box} body{margin:0;background:#0b0d0f;color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
+      header{position:sticky;top:0;background:#0c1014;border-bottom:1px solid #151a20;z-index:10}
+      .bar{display:flex;gap:12px;align-items:center;padding:12px 20px}
+      .brand{font-weight:700} .brand span{color:var(--brand)}
+      .pill{display:flex;gap:6px;flex:1} .pill input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #1c2430;background:#0f141a;color:#e6e6e6}
+      .btn{padding:9px 13px;border-radius:10px;border:1px solid #1f2833;background:#13202b;color:#e9f0f8;cursor:pointer}
+      .btn:hover{filter:brightness(1.08)} .btn.secondary{background:#0e151c}
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:18px;padding:20px;max-width:1200px;margin:0 auto}
+      .card{background:var(--card);border:1px solid #151b22;border-radius:16px;overflow:hidden;display:flex;flex-direction:column}
+      .imgwrap{aspect-ratio:1/1;background:#0f1419;display:grid;place-items:center}
+      .imgwrap img{max-width:100%;max-height:100%;object-fit:contain}
+      .title{padding:10px 12px;min-height:52px}
+      .price{padding:0 12px 12px;color:var(--brand);font-weight:700}
+      .card .actions{padding:12px}
+      /* drawer */
+      .drawer-bg{position:fixed;inset:0;display:none;background:rgba(0,0,0,.45);z-index:50}
+      .drawer{position:absolute;right:0;top:0;bottom:0;width:380px;max-width:95vw;background:#10151b;border-left:1px solid #1b222c;transform:translateX(100%);transition:transform .22s ease}
+      .drawer.open{transform:translateX(0)}
+      .drawer header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #1a212a;background:#0f1419}
+      .drawer .list{padding:10px 14px;display:flex;flex-direction:column;gap:12px;max-height:calc(100vh - 160px);overflow:auto}
+      .cart-row{display:flex;gap:10px;align-items:center;border:1px solid #161d26;border-radius:12px;padding:10px}
+      .cart-row img{width:48px;height:48px;object-fit:contain;background:#0e1318;border-radius:8px}
+      .row{display:flex;gap:10px}
+      .muted{color:var(--muted)}
+      /* modal (auth) */
+      .modal-bg{position:fixed;inset:0;display:none;background:rgba(0,0,0,.55);z-index:60;align-items:center;justify-content:center}
+      .modal{width:420px;max-width:92vw;background:#10151b;border:1px solid #1a222b;border-radius:16px;padding:16px}
+      .modal header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+      .close{cursor:pointer;opacity:.8}
+      input[type="text"],input[type="password"],input[type="email"]{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #1c2430;background:#0f141a;color:#e6e6e6}
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="bar">
+        <div class="brand">CloudPros <span>Web Store</span></div>
+        <div class="pill">
+          <input id="q" placeholder="Search products..."/>
+          <button class="btn" id="searchBtn">Search</button>
+        </div>
+        <span class="spacer" style="flex:1"></span>
+        <nav><a href="#" id="signinLink">Sign in</a></nav>
+        <button class="btn secondary" id="cartBtn">Cart (<span id="cartCount">0</span>)</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="grid" id="grid"></section>
+    </main>
+
+    <!-- Cart Drawer -->
+    <div class="drawer-bg" id="drawerBg">
+      <aside class="drawer" id="drawer">
+        <header>
+          <strong>Your cart</strong>
+          <span class="close" id="drawerClose">✕</span>
+        </header>
+        <div class="list" id="cartList"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;padding:12px;border-top:1px solid #19222b;background:#0f1419">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div class="muted">Total</div>
+            <div><strong id="cartTotal">$0.00</strong></div>
+          </div>
+          <div class="row" style="justify-content:flex-end">
+            <button class="btn secondary" id="viewLater">Continue shopping</button>
+            <button class="btn" id="beginCheckout">Checkout</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Checkout Modal -->
+    <div class="modal-bg" id="checkoutModal">
+      <div class="modal">
+        <header><h3>Checkout</h3><span class="close" id="closeCheckout">✕</span></header>
+        <div class="row"><input id="fullName" placeholder="Full name"/></div>
+        <div class="row" style="margin-top:8px"><input id="email" type="email" placeholder="Email"/></div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px">
+          <div>Total: <strong id="checkoutTotal">$0.00</strong></div>
+          <button class="btn" id="placeOrder">Place order</button>
+        </div>
+        <p class="muted" id="orderMsg" style="margin-top:10px"></p>
+      </div>
+    </div>
+
+    <!-- Auth Modal -->
+    <div class="modal-bg" id="authModalBg">
+      <div class="modal">
+        <header><h3 id="authTitle">Sign in</h3><span class="close" id="authClose">✕</span></header>
+        <div class="row"><input id="authUsername" type="text" placeholder="Username"/></div>
+        <div class="row" style="margin-top:8px"><input id="authPassword" type="password" placeholder="Password"/></div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px">
+          <button class="btn secondary" id="toggleAuth">Create account</button>
+          <button class="btn" id="authSubmit">Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // ---- API helpers
+      const api = {
+        products: (p) => `/api/products${p}`,
+        carts:    (p) => `/api/carts${p}`,
+        orders:   (p) => `/api/orders${p}`,
+        users:    (p) => `/api/users${p}`,
+      };
+      const $ = (s)=>document.querySelector(s);
+      const grid = $("#grid");
+      const cartCount = $("#cartCount");
+      const drawerBg = $("#drawerBg");
+      const drawer = $("#drawer");
+      const cartList = $("#cartList");
+      const cartTotal = $("#cartTotal");
+      const checkoutModal = $("#checkoutModal");
+      const checkoutTotal = $("#checkoutTotal");
+      const orderMsg = $("#orderMsg");
+      const authModalBg = $("#authModalBg");
+      const signinLink = $("#signinLink");
+
+      // ---- Session
+      let auth = JSON.parse(localStorage.getItem("cp_auth") || "null");
+      let guestId = localStorage.getItem("cp_guest_id");
+      if (!guestId){ guestId = "g:" + crypto.randomUUID(); localStorage.setItem("cp_guest_id", guestId); }
+      const userId = () => (auth?.user?.id ?? guestId);
+      const authHeader = () => (auth?.token ? { "Authorization": "Bearer " + auth.token } : {});
+
+      // ---- Auth UI
+      let creating = false;
+      const setAuthMode = () => {
+        $("#authTitle").textContent = creating ? "Create account" : "Sign in";
+        $("#toggleAuth").textContent = creating ? "I have an account" : "Create account";
+        $("#authSubmit").textContent = creating ? "Sign up" : "Continue";
+      };
+      $("#toggleAuth").onclick = () => { creating = !creating; setAuthMode(); };
+      $("#signinLink").onclick = (e)=>{ e.preventDefault(); $("#authUsername").value=""; $("#authPassword").value=""; setAuthMode(); authModalBg.style.display="flex"; };
+      $("#authClose").onclick = ()=> authModalBg.style.display="none";
+
+      async function signupUser(username, password){
+        const r = await fetch(api.users("/signup"), {
+          method:"POST",
+          headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        if (!r.ok){
+          const t = await r.text();
+          throw new Error(t || "signup failed");
+        }
+      }
+      async function loginUser(username, password){
+        // try JSON first
+        let r = await fetch(api.users("/login"), {
+          method:"POST",
+          headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        if (!r.ok){
+          // fallback to x-www-form-urlencoded if server expects form
+          const form = new URLSearchParams(); form.set("username", username); form.set("password", password);
+          r = await fetch(api.users("/login"), { method:"POST", body: form });
+        }
+        if (!r.ok) throw new Error("login failed");
+        return await r.json(); // { access_token }
+      }
+      async function fetchMe(token){
+        const r = await fetch(api.users("/me"), { headers:{ "Authorization": "Bearer " + token }});
+        if (!r.ok) throw new Error("me failed");
+        return await r.json();
+      }
+      $("#authSubmit").onclick = async ()=>{
+        try{
+          const username = $("#authUsername").value.trim();
+          const password = $("#authPassword").value;
+          if (!username || !password) throw new Error("Please enter username and password");
+          if (creating) await signupUser(username, password);
+          const tok = await loginUser(username, password);
+          const me = await fetchMe(tok.access_token);
+          auth = { token: tok.access_token, user: me };
+          localStorage.setItem("cp_auth", JSON.stringify(auth));
+          signinLink.textContent = me.username;
+          // merge guest cart -> user cart
+          await fetch(api.carts(`/cart/merge?fromUserId=${encodeURIComponent(guestId)}&toUserId=${encodeURIComponent(me.id)}`), { method:"POST" });
+          await refreshCart();
+          authModalBg.style.display = "none";
+        }catch(e){ alert("Auth error: " + e.message); }
+      };
+
+      // ---- Products
+      async function loadProducts(q=""){
+        const r = await fetch(api.products("/products" + (q?("?q="+encodeURIComponent(q)):"")));
+        const items = await r.json();
+        grid.innerHTML="";
+        for (const p of items){
+          const el = document.createElement("div");
+          el.className="card";
+          el.innerHTML = `
+            <div class="imgwrap"><img src="${p.image}" alt=""/></div>
+            <div class="title">${p.title}</div>
+            <div class="price">$${(+p.price).toFixed(2)}</div>
+            <div class="actions"><button class="btn add">Add to cart</button></div>`;
+          el.querySelector(".add").onclick = ()=> addToCart(p.id, 1, {openDrawer:true});
+          grid.appendChild(el);
+        }
+      }
+
+      // ---- Cart
+      async function getCart(){
+        const r = await fetch(api.carts(`/cart?userId=${encodeURIComponent(userId())}`));
+        return await r.json(); // {items,total,count}
+      }
+      async function refreshCart(){
+        const c = await getCart();
+        cartCount.textContent = c.count || 0;
+        cartTotal.textContent = `$${(c.total||0).toFixed(2)}`;
+        checkoutTotal.textContent = cartTotal.textContent;
+        return c;
+      }
+      async function addToCart(product_id, qty=1, {openDrawer=false}={}){
+        await fetch(api.carts(`/cart/add?userId=${encodeURIComponent(userId())}&product_id=${product_id}&qty=${qty}`), { method:"POST" });
+        await refreshCart();
+        if (openDrawer) showDrawer();
+      }
+      function renderCartList(c){
+        cartList.innerHTML = "";
+        for (const it of (c.items||[])){
+          const row = document.createElement("div");
+          row.className = "cart-row";
+          row.innerHTML = `
+            <img src="${it.image || ''}" alt="">
+            <div style="flex:1">
+              <div>${it.title || ("Product #"+it.product_id)}</div>
+              <div class="muted">$${(+it.price).toFixed(2)} x ${it.qty}</div>
+            </div>
+            <div class="row">
+              <button class="btn secondary dec">−</button>
+              <button class="btn secondary inc">+</button>
+              <button class="btn secondary rem">Remove</button>
+            </div>`;
+          row.querySelector(".inc").onclick = async ()=>{ await addToCart(it.product_id, 1); draw(); };
+          row.querySelector(".dec").onclick = async ()=>{ await fetch(api.carts(`/cart/add?userId=${encodeURIComponent(userId())}&product_id=${it.product_id}&qty=-1`), {method:"POST"}); draw(); };
+          row.querySelector(".rem").onclick = async ()=>{ await fetch(api.carts(`/cart/remove?userId=${encodeURIComponent(userId())}&product_id=${it.product_id}`), {method:"POST"}); draw(); };
+          cartList.appendChild(row);
+        }
+      }
+      async function draw(){ const c = await refreshCart(); renderCartList(c); }
+
+      // Drawer controls
+      function showDrawer(){ drawerBg.style.display="block"; setTimeout(()=> drawer.classList.add("open"), 10); draw(); }
+      function hideDrawer(){ drawer.classList.remove("open"); setTimeout(()=> drawerBg.style.display="none", 200); }
+      $("#cartBtn").onclick = showDrawer;
+      $("#drawerClose").onclick = hideDrawer;
+      $("#viewLater").onclick = hideDrawer;
+
+      // ---- Checkout
+      $("#beginCheckout").onclick = async ()=>{
+        const c = await refreshCart();
+        if ((c.count||0)===0){ alert("Your cart is empty."); return; }
+        hideDrawer();
+        checkoutModal.style.display="flex";
+      };
+      $("#closeCheckout").onclick = ()=> checkoutModal.style.display="none";
+      $("#placeOrder").onclick = async ()=>{
+        const full_name = $("#fullName").value.trim();
+        const email = $("#email").value.trim();
+        const r = await fetch(api.orders("/checkout"), {
+          method:"POST", headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify({ userId: userId(), full_name, email })
+        });
+        if (!r.ok){ alert("Checkout failed: " + await r.text()); return; }
+        const data = await r.json();
+        orderMsg.textContent = "Order placed: " + data.order_id;
+        await refreshCart();
+        setTimeout(()=> checkoutModal.style.display="none", 1200);
+      };
+
+      // ---- Search
+      $("#searchBtn").onclick = ()=> loadProducts($("#q").value);
+      $("#q").addEventListener("keydown", (e)=>{ if (e.key==="Enter") $("#searchBtn").click(); });
+
+      // ---- Init
+      (async function init(){
+        if (auth?.user) signinLink.textContent = auth.user.username;
+        await loadProducts("");
+        await refreshCart();
+      })();
+    </script>
+  </body>
+</html>

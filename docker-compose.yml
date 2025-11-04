@@ -1,0 +1,123 @@
+services:
+  #  Web-ui will also act as nginx reverse-proxy
+  web-ui:
+    build:
+      context: ./web-ui/
+      dockerfile: Dockerfile
+    container_name: web-ui
+    ports:
+      - "8080:80"
+    depends_on:
+      - products
+      - carts
+      - orders
+      - users
+    networks:
+      - web
+
+  products:
+    build:
+      context: ./services/products
+      dockerfile: Dockerfile
+    container_name: products
+    ports:
+      - "8001"
+    depends_on:
+      - db
+    env_file:
+      - .env
+    volumes:
+      - products_data:/data
+    networks:
+      - web
+
+  carts:
+    build:
+      context: ./services/carts
+      dockerfile: Dockerfile
+    container_name: carts
+    ports:
+      - "8002"
+    depends_on:
+      - products
+      - redis
+    env_file:
+      - .env
+    networks:
+      - web
+      - carts-cache
+  
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - carts-cache
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  orders:
+    build:
+      context: ./services/orders
+      dockerfile: Dockerfile
+    container_name: orders
+    ports:
+      - "8004"
+    depends_on:
+      - carts
+    env_file:
+      - .env
+    networks:
+      - web
+
+  users:
+    build:
+      context: ./services/users
+      dockerfile: Dockerfile
+    container_name: users
+    ports:
+      - "8015"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    networks:
+      - web
+      - db-network
+
+  db:
+    image: postgres:16
+    container_name: db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - db-network
+      - web
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  products_data:
+
+networks:
+  web:
+    driver: bridge
+  carts-cache:   
+    driver: bridge
+  db-network:
+    driver: bridge
+

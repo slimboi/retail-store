@@ -1,0 +1,193 @@
+services:
+  
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--accesslog=true"
+      - "--accesslog.bufferingsize=100"
+      - "--accesslog.format=json"
+      - "--log.level=info"
+      - "--ping=true"
+    ports:
+      - "80:80" # HTTP
+      - "8080:8080" # Dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - web
+    depends_on:
+      - web-ui
+      - products
+      - carts
+      - orders
+      - users
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  web-ui:
+    build:
+      context: ./web-ui/
+      dockerfile: Dockerfile
+    container_name: web-ui
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.web-ui.rule=Host(`localhost`)"
+      - "traefik.http.routers.web-ui.entrypoints=web"
+      - "traefik.http.services.web-ui.loadbalancer.server.port=80"
+    depends_on:
+      - products
+      - carts
+      - orders
+      - users
+    networks:
+      - web
+  
+  products:
+    build:
+      context: ./services/products
+      dockerfile: Dockerfile
+    container_name: products
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.products.rule=Host(`localhost`) && PathPrefix(`/api/products/`)"
+      - "traefik.http.routers.products.entrypoints=web"
+      - "traefik.http.services.products.loadbalancer.server.port=8001"
+      - "traefik.http.middlewares.products-strip.stripprefix.prefixes=/api/products"
+      - "traefik.http.routers.products.middlewares=products-strip"
+    ports:
+      - "8001"
+    depends_on:
+      - db
+    env_file:
+      - .env
+    volumes:
+      - products_data:/data
+    networks:
+      - web
+  
+  carts:
+    build:
+      context: ./services/carts
+      dockerfile: Dockerfile
+    container_name: carts
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.carts.rule=Host(`localhost`) && PathPrefix(`/api/carts/`)" # play around with this!
+      - "traefik.http.routers.carts.entrypoints=web"
+      - "traefik.http.services.carts.loadbalancer.server.port=8002"
+      - "traefik.http.middlewares.carts-strip.stripprefix.prefixes=/api/carts"
+      - "traefik.http.routers.carts.middlewares=carts-strip"
+      - "traefik.docker.network=retail-store_web" # Remove this and see if it fails again
+    ports:
+      - "8002"
+    depends_on:
+      - products
+      - redis
+    env_file:
+      - .env
+    networks:
+      - web
+      - carts-cache
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - carts-cache
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  orders:
+    build:
+      context: ./services/orders
+      dockerfile: Dockerfile
+    container_name: orders
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.orders.rule=Host(`localhost`) && PathPrefix(`/api/orders/`)"
+      - "traefik.http.routers.orders.entrypoints=web"
+      - "traefik.http.services.orders.loadbalancer.server.port=8004"
+      - "traefik.http.middlewares.orders-strip.stripprefix.prefixes=/api/orders"
+      - "traefik.http.routers.orders.middlewares=orders-strip"
+    ports:
+      - "8004"
+    depends_on:
+      - carts
+    env_file:
+      - .env
+    networks:
+      - web
+  
+  users:
+    build:
+      context: ./services/users
+      dockerfile: Dockerfile
+    container_name: users
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.users.rule=Host(`localhost`) && PathPrefix(`/api/users/`)"
+      - "traefik.http.routers.users.entrypoints=web"
+      - "traefik.http.services.users.loadbalancer.server.port=8015"
+      - "traefik.http.middlewares.users-strip.stripprefix.prefixes=/api/users"
+      - "traefik.http.routers.users.middlewares=users-strip"
+      - "traefik.docker.network=retail-store_web"
+    ports:
+      - "8015"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    networks:
+      - web
+      - db-network
+
+  db:
+    image: postgres:16
+    container_name: db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./services/postgres/init/01_users_schema.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - db-network
+      - web
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  products_data:
+
+networks:
+  web:
+    driver: bridge
+  carts-cache:   
+    driver: bridge
+  db-network:
+    driver: bridge
