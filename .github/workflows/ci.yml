@@ -1,0 +1,305 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'web-ui/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'web-ui/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to build (products, carts, orders, users, web-ui, or all)'
+        required: true
+        default: 'all'
+      version:
+        description: 'Version override (e.g., 1.2.3)'
+        required: false
+
+env:
+  DOCKERHUB_USERNAME: slimboi
+  REGISTRY: docker.io
+
+jobs:
+  # Detect which services have changed
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+      products: ${{ steps.filter.outputs.products }}
+      carts: ${{ steps.filter.outputs.carts }}
+      orders: ${{ steps.filter.outputs.orders }}
+      users: ${{ steps.filter.outputs.users }}
+      web-ui: ${{ steps.filter.outputs.web-ui }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            products:
+              - 'services/products/**'
+            carts:
+              - 'services/carts/**'
+            orders:
+              - 'services/orders/**'
+            users:
+              - 'services/users/**'
+            web-ui:
+              - 'web-ui/**'
+
+      - name: Manual service selection
+        if: github.event_name == 'workflow_dispatch'
+        id: manual
+        run: |
+          if [ "${{ github.event.inputs.service }}" == "all" ]; then
+            echo "changes=[\"products\",\"carts\",\"orders\",\"users\",\"web-ui\"]" >> $GITHUB_OUTPUT
+          else
+            echo "changes=[\"${{ github.event.inputs.service }}\"]" >> $GITHUB_OUTPUT
+          fi
+
+  # Build matrix of changed services
+  build-matrix:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          services='[]'
+
+          if [ "${{ needs.detect-changes.outputs.products }}" == "true" ]; then
+            services=$(echo $services | jq '. += [{"name": "products", "path": "services/products", "type": "python"}]')
+          fi
+
+          if [ "${{ needs.detect-changes.outputs.carts }}" == "true" ]; then
+            services=$(echo $services | jq '. += [{"name": "carts", "path": "services/carts", "type": "python"}]')
+          fi
+
+          if [ "${{ needs.detect-changes.outputs.orders }}" == "true" ]; then
+            services=$(echo $services | jq '. += [{"name": "orders", "path": "services/orders", "type": "python"}]')
+          fi
+
+          if [ "${{ needs.detect-changes.outputs.users }}" == "true" ]; then
+            services=$(echo $services | jq '. += [{"name": "users", "path": "services/users", "type": "python"}]')
+          fi
+
+          if [ "${{ needs.detect-changes.outputs.web-ui }}" == "true" ]; then
+            services=$(echo $services | jq '. += [{"name": "web-ui", "path": "web-ui", "type": "nginx"}]')
+          fi
+
+          echo "matrix={\"include\":$services}" >> $GITHUB_OUTPUT
+          echo "Services to build: $services"
+
+  # Quality checks and build
+  quality-and-build:
+    needs: build-matrix
+    if: needs.build-matrix.outputs.matrix != '{"include":[]}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        if: matrix.type == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python linting tools
+        if: matrix.type == 'python'
+        run: |
+          pip install ruff
+
+      - name: Lint Python code with Ruff
+        if: matrix.type == 'python'
+        run: |
+          echo "::group::Linting ${{ matrix.name }} with Ruff"
+          ruff check ${{ matrix.path }}/app \
+            --output-format=github \
+            --target-version=py312 \
+            --line-length=120 \
+            --select=E,W,F,I,N,UP,S,B,A,C4,DTZ,T10,DJ,EM,ISC,ICN,PIE,PT,Q,RSE,RET,SIM,TID,ARG,PTH,PD,PL,TRY,NPY,RUF \
+            --ignore=D100,D101,D102,D103,D104,D105,D106,D107 || true
+          echo "::endgroup::"
+
+      - name: Get version
+        id: version
+        run: |
+          if [ -f "${{ matrix.path }}/VERSION" ]; then
+            VERSION=$(cat ${{ matrix.path }}/VERSION)
+          else
+            # Default version if file doesn't exist
+            VERSION="0.1.0"
+            echo $VERSION > ${{ matrix.path }}/VERSION
+          fi
+
+          # Override with manual input if provided
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.path }}
+          file: ${{ matrix.path }}/Dockerfile
+          push: false
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results-${{ matrix.name }}.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'  # Don't fail the build
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results-${{ matrix.name }}.sarif'
+          category: trivy-${{ matrix.name }}
+
+      - name: Check Trivy results
+        run: |
+          echo "::group::Trivy Scan Results for ${{ matrix.name }}"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image \
+            --severity CRITICAL,HIGH \
+            --format table \
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}
+          echo "::endgroup::"
+
+      - name: Login to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.path }}
+          file: ${{ matrix.path }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:v${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:latest
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create Git tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TAG="${{ matrix.name }}-v${{ steps.version.outputs.version }}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            git tag -a "$TAG" -m "Release ${{ matrix.name }} v${{ steps.version.outputs.version }}"
+            git push origin "$TAG" || echo "Failed to push tag, may already exist remotely"
+          fi
+
+      - name: Generate changelog
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 --match="${{ matrix.name }}-v*" HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --max-count=10 -- ${{ matrix.path }})
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD -- ${{ matrix.path }})
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            COMMITS="- Initial release"
+          fi
+
+          # Save to file for multiline handling
+          echo "$COMMITS" > changelog.txt
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          cat changelog.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ matrix.name }}-v${{ steps.version.outputs.version }}
+          name: ${{ matrix.name }} v${{ steps.version.outputs.version }}
+          body: |
+            ## ${{ matrix.name }} v${{ steps.version.outputs.version }}
+
+            ### Docker Images
+            - `${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:v${{ steps.version.outputs.version }}`
+            - `${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:latest`
+            - `${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}`
+
+            ### Changes
+            ${{ steps.changelog.outputs.changelog }}
+
+            ### Metadata
+            - **Commit SHA**: ${{ github.sha }}
+            - **Build Date**: ${{ github.event.head_commit.timestamp }}
+            - **Triggered by**: @${{ github.actor }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Summary job
+  summary:
+    needs: [build-matrix, quality-and-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check build status
+        run: |
+          if [ "${{ needs.quality-and-build.result }}" == "failure" ]; then
+            echo "::error::One or more services failed quality checks"
+            exit 1
+          elif [ "${{ needs.quality-and-build.result }}" == "success" ]; then
+            echo "::notice::All services passed quality checks ✓"
+          else
+            echo "::warning::No services were built (no changes detected)"
+          fi

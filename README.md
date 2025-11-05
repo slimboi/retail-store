@@ -1,5 +1,7 @@
 # CloudPros Web Store
 
+[![CI Pipeline](https://github.com/slimboi/retail-store/actions/workflows/ci.yml/badge.svg)](https://github.com/slimboi/retail-store/actions/workflows/ci.yml)
+
 Minimal store composed of services: products (SQLite, seeded from FakeStore), carts (Redis),
 orders (checkout + cart clear), users (PostgreSQL with JWT auth), and a static web UI proxied via Nginx.
 
@@ -16,13 +18,18 @@ open http://localhost:8080
 ```
 
 ## Services Architecture
-- **web-ui** - Static frontend + Nginx reverse proxy (Alpine, 49.7MB)
-- **products** - Product catalog API with SQLite (Alpine, 118MB)
-- **carts** - Shopping cart API with Redis (Alpine, 94.1MB)
-- **orders** - Order processing and checkout API (Alpine, 91.7MB)
-- **users** - User authentication API with PostgreSQL (Alpine, 142MB)
-- **db** - PostgreSQL database
-- **redis** - Redis cache
+
+| Service | Version | Image Size | Docker Hub |
+|---------|---------|------------|------------|
+| **web-ui** | v1.0.0 | 49.7MB | [slimboi/web-ui](https://hub.docker.com/r/slimboi/web-ui) |
+| **products** | v1.0.0 | 118MB | [slimboi/products](https://hub.docker.com/r/slimboi/products) |
+| **carts** | v1.0.0 | 94.1MB | [slimboi/carts](https://hub.docker.com/r/slimboi/carts) |
+| **orders** | v1.0.0 | 91.7MB | [slimboi/orders](https://hub.docker.com/r/slimboi/orders) |
+| **users** | v1.0.0 | 142MB | [slimboi/users](https://hub.docker.com/r/slimboi/users) |
+| **db** | - | - | PostgreSQL 16 |
+| **redis** | - | - | Redis Alpine |
+
+All microservices are built with Alpine Linux base images and multi-stage builds.
 
 ## Containerization Features
 - Multi-stage builds for minimal image sizes
@@ -31,6 +38,39 @@ open http://localhost:8080
 - Health checks built into Dockerfiles
 - Proper .dockerignore files to exclude unnecessary files
 - Environment-based configuration
+
+## CI/CD Pipeline
+
+The project uses GitHub Actions for continuous integration and delivery:
+
+### Automated Workflows
+- **Change Detection**: Only builds services that have changed
+- **Quality Gates**:
+  - Python linting with Ruff (fast, modern linter)
+  - Docker image building
+  - Trivy security vulnerability scanning (CRITICAL/HIGH severity)
+- **Docker Hub Publishing**: Automatic push to [Docker Hub](https://hub.docker.com/u/slimboi) on main branch
+- **GitHub Releases**: Automated release creation with changelogs
+
+### Image Tags
+Each service is tagged with:
+- `v{version}` - SemVer version from VERSION file
+- `latest` - Latest stable release
+- `{git-sha}` - Specific commit SHA for traceability
+
+### Manual Workflow Dispatch
+Trigger builds manually with custom parameters:
+```bash
+# Via GitHub UI: Actions → CI Pipeline → Run workflow
+# Select service: products, carts, orders, users, web-ui, or all
+# Optional: Override version (e.g., 1.2.3)
+```
+
+### Version Management
+Each service maintains its version in a `VERSION` file following [SemVer](https://semver.org/):
+- **MAJOR**: Incompatible API changes
+- **MINOR**: Backwards-compatible functionality additions
+- **PATCH**: Backwards-compatible bug fixes
 
 ## Notes
 - First start will fetch products from https://fakestoreapi.com/ and cache them locally (SQLite).
