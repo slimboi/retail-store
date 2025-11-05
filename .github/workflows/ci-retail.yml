@@ -113,26 +113,31 @@ jobs:
           services='[]'
 
           if [ "${{ needs.detect-changes.outputs.products }}" == "true" ]; then
-            services=$(echo $services | jq '. += [{"name": "products", "path": "services/products", "type": "python"}]')
+            services=$(echo $services | jq -c '. += [{"name": "products", "path": "services/products", "type": "python"}]')
           fi
 
           if [ "${{ needs.detect-changes.outputs.carts }}" == "true" ]; then
-            services=$(echo $services | jq '. += [{"name": "carts", "path": "services/carts", "type": "python"}]')
+            services=$(echo $services | jq -c '. += [{"name": "carts", "path": "services/carts", "type": "python"}]')
           fi
 
           if [ "${{ needs.detect-changes.outputs.orders }}" == "true" ]; then
-            services=$(echo $services | jq '. += [{"name": "orders", "path": "services/orders", "type": "python"}]')
+            services=$(echo $services | jq -c '. += [{"name": "orders", "path": "services/orders", "type": "python"}]')
           fi
 
           if [ "${{ needs.detect-changes.outputs.users }}" == "true" ]; then
-            services=$(echo $services | jq '. += [{"name": "users", "path": "services/users", "type": "python"}]')
+            services=$(echo $services | jq -c '. += [{"name": "users", "path": "services/users", "type": "python"}]')
           fi
 
           if [ "${{ needs.detect-changes.outputs.web-ui }}" == "true" ]; then
-            services=$(echo $services | jq '. += [{"name": "web-ui", "path": "web-ui", "type": "nginx"}]')
+            services=$(echo $services | jq -c '. += [{"name": "web-ui", "path": "web-ui", "type": "nginx"}]')
           fi
 
-          echo "matrix={\"include\":$services}" >> $GITHUB_OUTPUT
+          # Use compact JSON and proper multiline delimiter
+          matrix_json="{\"include\":$services}"
+          echo "matrix<<EOF" >> $GITHUB_OUTPUT
+          echo "$matrix_json" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
           echo "Services to build: $services"
 
   # Quality checks and build
@@ -203,7 +208,7 @@ jobs:
           fi
 
           # Validate SemVer format - FIXED SYNTAX
-          if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' > /dev/null; then
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::Invalid version format: $VERSION. Expected SemVer (e.g., 1.2.3)"
             exit 1
           fi
