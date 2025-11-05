@@ -1,27 +1,36 @@
 name: CI Pipeline
 
 on:
-  # pull_request:
-  #   branches: [main]
-  #   paths:
-  #     - 'services/**'
-  #     - 'web-ui/**'
-  #     - '.github/workflows/**'
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'services/**'
-  #     - 'web-ui/**'
-  #     - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'web-ui/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'web-ui/**'
+      - '.github/workflows/**'
   workflow_dispatch:
     inputs:
       service:
         description: 'Service to build (products, carts, orders, users, web-ui, or all)'
         required: true
         default: 'all'
+        type: choice
+        options:
+          - all
+          - products
+          - carts
+          - orders
+          - users
+          - web-ui
       version:
         description: 'Version override (e.g., 1.2.3)'
         required: false
+        type: string
 
 env:
   DOCKERHUB_USERNAME: slimboi
@@ -32,16 +41,19 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      services: ${{ steps.filter.outputs.changes }}
-      products: ${{ steps.filter.outputs.products }}
-      carts: ${{ steps.filter.outputs.carts }}
-      orders: ${{ steps.filter.outputs.orders }}
-      users: ${{ steps.filter.outputs.users }}
-      web-ui: ${{ steps.filter.outputs.web-ui }}
+      services: ${{ steps.set-services.outputs.services }}
+      products: ${{ steps.set-services.outputs.products }}
+      carts: ${{ steps.set-services.outputs.carts }}
+      orders: ${{ steps.set-services.outputs.orders }}
+      users: ${{ steps.set-services.outputs.users }}
+      web-ui: ${{ steps.set-services.outputs.web-ui }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dorny/paths-filter@v3
+      # Only run path filter for non-manual triggers
+      - name: Detect changed paths
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
@@ -56,14 +68,34 @@ jobs:
             web-ui:
               - 'web-ui/**'
 
-      - name: Manual service selection
-        if: github.event_name == 'workflow_dispatch'
-        id: manual
+      # Set final outputs based on trigger type
+      - name: Set service outputs
+        id: set-services
         run: |
-          if [ "${{ github.event.inputs.service }}" == "all" ]; then
-            echo "changes=[\"products\",\"carts\",\"orders\",\"users\",\"web-ui\"]" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual dispatch - use input
+            case "${{ github.event.inputs.service }}" in
+              "all")
+                echo "products=true" >> $GITHUB_OUTPUT
+                echo "carts=true" >> $GITHUB_OUTPUT
+                echo "orders=true" >> $GITHUB_OUTPUT
+                echo "users=true" >> $GITHUB_OUTPUT
+                echo "web-ui=true" >> $GITHUB_OUTPUT
+                echo "services=[\"products\",\"carts\",\"orders\",\"users\",\"web-ui\"]" >> $GITHUB_OUTPUT
+                ;;
+              *)
+                echo "${{ github.event.inputs.service }}=true" >> $GITHUB_OUTPUT
+                echo "services=[\"${{ github.event.inputs.service }}\"]" >> $GITHUB_OUTPUT
+                ;;
+            esac
           else
-            echo "changes=[\"${{ github.event.inputs.service }}\"]" >> $GITHUB_OUTPUT
+            # Automatic trigger - use path filter
+            echo "products=${{ steps.filter.outputs.products }}" >> $GITHUB_OUTPUT
+            echo "carts=${{ steps.filter.outputs.carts }}" >> $GITHUB_OUTPUT
+            echo "orders=${{ steps.filter.outputs.orders }}" >> $GITHUB_OUTPUT
+            echo "users=${{ steps.filter.outputs.users }}" >> $GITHUB_OUTPUT
+            echo "web-ui=${{ steps.filter.outputs.web-ui }}" >> $GITHUB_OUTPUT
+            echo "services=${{ steps.filter.outputs.changes }}" >> $GITHUB_OUTPUT
           fi
 
   # Build matrix of changed services
@@ -117,6 +149,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Track build duration
+      - name: Start build timer
+        id: timer
+        run: echo "start_time=$(date +%s)" >> $GITHUB_OUTPUT
+
       - name: Set up Python
         if: matrix.type == 'python'
         uses: actions/setup-python@v5
@@ -141,6 +178,14 @@ jobs:
             --ignore=D100,D101,D102,D103,D104,D105,D106,D107 || true
           echo "::endgroup::"
 
+      # Format check recommendation
+      - name: Check Python code formatting with Ruff
+        if: matrix.type == 'python'
+        run: |
+          echo "::group::Checking formatting for ${{ matrix.name }} with Ruff"
+          ruff format ${{ matrix.path }}/app --check --diff || true
+          echo "::endgroup::"
+
       - name: Get version
         id: version
         run: |
@@ -155,6 +200,12 @@ jobs:
           # Override with manual input if provided
           if [ -n "${{ github.event.inputs.version }}" ]; then
             VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          # Validate SemVer format - FIXED SYNTAX
+          if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' > /dev/null; then
+            echo "::error::Invalid version format: $VERSION. Expected SemVer (e.g., 1.2.3)"
+            exit 1
           fi
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -175,14 +226,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Improved security scanning with visual feedback
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.33.1
+        id: trivy
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results-${{ matrix.name }}.sarif'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'  # Don't fail the build
+          exit-code: '1'
+        continue-on-error: true
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -191,7 +245,8 @@ jobs:
           sarif_file: 'trivy-results-${{ matrix.name }}.sarif'
           category: trivy-${{ matrix.name }}
 
-      - name: Check Trivy results
+      - name: Display Trivy scan results
+        if: always()
         run: |
           echo "::group::Trivy Scan Results for ${{ matrix.name }}"
           docker run --rm \
@@ -201,6 +256,46 @@ jobs:
             --format table \
             ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}
           echo "::endgroup::"
+          
+          # Add contextual message based on scan result
+          if [ "${{ steps.trivy.outcome }}" == "failure" ]; then
+            echo "::warning::🔍 Security vulnerabilities detected in ${{ matrix.name }}"
+            echo "::notice::📋 Review findings in the Security tab: https://github.com/${{ github.repository }}/security/code-scanning"
+            echo "::notice::⚠️ This won't block deployment per instructor guidance, but should be reviewed"
+          else
+            echo "::notice::✅ No CRITICAL or HIGH vulnerabilities found in ${{ matrix.name }}"
+          fi
+
+      - name: Comment security scan result on PR
+        if: github.event_name == 'pull_request' && steps.trivy.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const service = '${{ matrix.name }}';
+            const sha = '${{ github.sha }}'.substring(0, 7);
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔒 Security Scan Results
+            
+            **Service:** \`${service}\`
+            **Status:** ⚠️ Vulnerabilities Detected
+            
+            ### Summary
+            CRITICAL or HIGH severity vulnerabilities were found during scanning.
+            
+            ### Action Required
+            - 📋 Review detailed findings in the [Security tab](https://github.com/${context.repo.owner}/${context.repo.repo}/security/code-scanning?query=is:open+branch:${context.ref})
+            - 🔍 Check if vulnerabilities are exploitable in your context
+            - 📌 Create tracking issues for remediation
+            
+            ### Note
+            Per instructor guidance, this won't block the pipeline, but vulnerabilities should be tracked and addressed when feasible.
+            
+            **Image scanned:** \`${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${service}:${sha}\``
+            })
 
       - name: Login to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -232,10 +327,10 @@ jobs:
           TAG="${{ matrix.name }}-v${{ steps.version.outputs.version }}"
 
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping"
+            echo "::warning::Tag $TAG already exists, skipping"
           else
             git tag -a "$TAG" -m "Release ${{ matrix.name }} v${{ steps.version.outputs.version }}"
-            git push origin "$TAG" || echo "Failed to push tag, may already exist remotely"
+            git push origin "$TAG" || echo "::error::Failed to push tag, may already exist remotely"
           fi
 
       - name: Generate changelog
@@ -261,6 +356,18 @@ jobs:
           cat changelog.txt >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      # Track build duration
+      - name: Calculate build duration
+        if: always()
+        run: |
+          start_time=${{ steps.timer.outputs.start_time }}
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          minutes=$((duration / 60))
+          seconds=$((duration % 60))
+          
+          echo "::notice::⏱️ Build completed for ${{ matrix.name }} in ${minutes}m ${seconds}s"
+
       - name: Create GitHub Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
@@ -274,6 +381,9 @@ jobs:
             - `${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:v${{ steps.version.outputs.version }}`
             - `${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:latest`
             - `${{ env.REGISTRY }}/${{ env.DOCKERHUB_USERNAME }}/${{ matrix.name }}:${{ github.sha }}`
+
+            ### Security Scan
+            ${{ steps.trivy.outcome == 'failure' && '⚠️ **Vulnerabilities Detected** - Review Security tab' || '✅ No critical vulnerabilities found' }}
 
             ### Changes
             ${{ steps.changelog.outputs.changelog }}
@@ -296,10 +406,10 @@ jobs:
       - name: Check build status
         run: |
           if [ "${{ needs.quality-and-build.result }}" == "failure" ]; then
-            echo "::error::One or more services failed quality checks"
+            echo "::error::❌ One or more services failed quality checks"
             exit 1
           elif [ "${{ needs.quality-and-build.result }}" == "success" ]; then
-            echo "::notice::All services passed quality checks ✓"
+            echo "::notice::✅ All services passed quality checks successfully"
           else
-            echo "::warning::No services were built (no changes detected)"
+            echo "::warning::⚠️ No services were built (no changes detected)"
           fi
